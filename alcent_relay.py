@@ -1,4 +1,4 @@
-# ATOS Relay v1.1.0 — V4 dual-engine 5M/15M campaign routing
+# ATOS Relay v1.2.0 — V4 dual-engine + campaign-scoped bulk TP
 from __future__ import annotations
 
 import html
@@ -31,6 +31,8 @@ ALLOWED_COMMANDS = {
     "CLOSE_SELLS",
     "DEFEND_BUYS",
     "DEFEND_SELLS",
+    "SET_BUY_TP",
+    "SET_SELL_TP",
     "MODIFY_SL",
     "MODIFY_TP",
     "MODIFY_SLTP",
@@ -419,3 +421,4 @@ init_db()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
+
