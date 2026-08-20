@@ -1,4 +1,4 @@
-# ATOS Relay v1.0.2 — DEFENSE command whitelist update
+# ATOS Relay v1.1.0 — V4 dual-engine 5M/15M campaign routing
 from __future__ import annotations
 
 import html
@@ -166,6 +166,18 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
     command = str(payload.get("command", "")).strip().upper()
     if command not in ALLOWED_COMMANDS:
         return False, "unknown command", 400
+
+    # V4 dual-engine ownership. The relay preserves the complete payload;
+    # MT4 uses campaign_id/engine_id to scope cancel/defend/inventory actions.
+    strategy_version = str(payload.get("strategy_version", "")).strip().upper()
+    if strategy_version.startswith("V4-"):
+        engine_id = str(payload.get("engine_id", "")).strip().upper()
+        campaign_id = str(payload.get("campaign_id", "")).strip().upper()
+        if engine_id not in ("5M", "15M"):
+            return False, "V4 engine_id must be 5M or 15M", 400
+        expected_campaign = "V4_" + engine_id
+        if campaign_id != expected_campaign:
+            return False, "V4 campaign_id does not match engine_id", 400
 
     # Role-gating defence in depth. Current EXECUTION alerts send true.
     if "execution_allowed" in payload and payload.get("execution_allowed") is not True:
