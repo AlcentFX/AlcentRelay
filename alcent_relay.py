@@ -1,4 +1,4 @@
-# ATOS Relay v1.2.0 — V4 dual-engine + campaign-scoped bulk TP
+# ATOS Relay v1.2.1 — V6 command-contract compatibility
 from __future__ import annotations
 
 import html
@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from flask import Flask, Response, jsonify, request
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.0"
+RELAY_VERSION = "1.2.1"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
@@ -40,6 +40,9 @@ ALLOWED_COMMANDS = {
     "CLOSE_CT_ORDER",
     "MODIFY_CT_SL",
     "MODIFY_CT_TP",
+    # V6 protective/logical-order commands. Transport only; no strategy logic here.
+    "V6_INVALIDATE_ORDER",
+    "V6_SET_LOGICAL_TP",
 }
 
 app = Flask(__name__)
