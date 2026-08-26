@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from flask import Flask, Response, jsonify, request
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.2.1"
+RELAY_VERSION = "1.3.0"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
@@ -40,6 +40,13 @@ ALLOWED_COMMANDS = {
     "CLOSE_CT_ORDER",
     "MODIFY_CT_SL",
     "MODIFY_CT_TP",
+
+    # V6 D8 trade-management commands. Relay transports only; MT4 executes.
+    "MANAGE_ORDER",
+    "PARTIAL_CLOSE",
+    "SET_ORDER_SL",
+    "SET_TRAILING_SL",
+
     # V6 protective/logical-order commands. Transport only; no strategy logic here.
     "V6_INVALIDATE_ORDER",
     "V6_SET_LOGICAL_TP",
@@ -88,6 +95,9 @@ def init_db() -> None:
             ("ct_campaign_id", "TEXT"),
             ("order_id", "TEXT"),
             ("event_time_ms", "INTEGER"),
+            ("close_percent", "REAL"),
+            ("trailing_distance", "REAL"),
+            ("new_stop_loss", "REAL"),
             ("acked_at", "INTEGER"),
             ("ack_status", "TEXT"),
             ("ack_detail", "TEXT"),
@@ -188,6 +198,36 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
     if "execution_allowed" in payload and payload.get("execution_allowed") is not True:
         return False, "execution_not_allowed", 403
 
+    # D8 management command contract.
+    if command in {"MANAGE_ORDER", "PARTIAL_CLOSE", "SET_ORDER_SL", "SET_TRAILING_SL"}:
+        order_id = str(payload.get("order_id", "")).strip()
+        if not order_id:
+            return False, "order_id required for management command", 400
+
+    if command in {"MANAGE_ORDER", "PARTIAL_CLOSE"}:
+        try:
+            close_percent = float(payload.get("close_percent"))
+        except (TypeError, ValueError):
+            return False, "close_percent required for partial management command", 400
+        if close_percent <= 0 or close_percent >= 100:
+            return False, "close_percent must be >0 and <100", 400
+
+    if command in {"MANAGE_ORDER", "SET_ORDER_SL"}:
+        try:
+            new_sl = float(payload.get("new_stop_loss"))
+        except (TypeError, ValueError):
+            return False, "new_stop_loss required for SL management command", 400
+        if new_sl <= 0:
+            return False, "new_stop_loss must be >0", 400
+
+    if command == "SET_TRAILING_SL":
+        try:
+            trail = float(payload.get("trailing_distance"))
+        except (TypeError, ValueError):
+            return False, "trailing_distance required for SET_TRAILING_SL", 400
+        if trail <= 0:
+            return False, "trailing_distance must be >0", 400
+
     # Stale-age protection applies ONLY to new entries.
     if command == "PLACE_PENDING":
         try:
@@ -218,8 +258,8 @@ def _insert_event(payload: dict) -> tuple[bool, int | None]:
                 INSERT INTO events(
                     event_id,payload,received_at,system,automation_version,strategy_version,
                     command,direction,reason,trading_period_id,campaign_id,ct_campaign_id,
-                    order_id,event_time_ms
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    order_id,event_time_ms,close_percent,trailing_distance,new_stop_loss
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     str(payload.get("event_id", "")), compact, now,
@@ -229,6 +269,9 @@ def _insert_event(payload: dict) -> tuple[bool, int | None]:
                     str(payload.get("trading_period_id", "")), str(payload.get("campaign_id", "")),
                     str(payload.get("ct_campaign_id", "")), str(payload.get("order_id", "")),
                     int(payload.get("event_time_ms", 0) or 0),
+                    float(payload.get("close_percent", 0) or 0),
+                    float(payload.get("trailing_distance", 0) or 0),
+                    float(payload.get("new_stop_loss", 0) or 0),
                 ),
             )
             conn.commit()
