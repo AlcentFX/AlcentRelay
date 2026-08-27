@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from flask import Flask, Response, jsonify, request
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.3.0"
+RELAY_VERSION = "1.3.1"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
@@ -23,6 +23,7 @@ DEFAULT_STALE_ENTRY_MINUTES = int(os.environ.get("ATOS_STALE_ENTRY_MINUTES", "5"
 
 ALLOWED_COMMANDS = {
     "PLACE_PENDING",
+    "REPLACE_PENDING",
     "CANCEL_ORDER",
     "CANCEL_BUYS",
     "CANCEL_SELLS",
@@ -229,11 +230,11 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
             return False, "trailing_distance must be >0", 400
 
     # Stale-age protection applies ONLY to new entries.
-    if command == "PLACE_PENDING":
+    if command in {"PLACE_PENDING", "REPLACE_PENDING"}:
         try:
             event_time_ms = int(payload.get("event_time_ms"))
         except (TypeError, ValueError):
-            return False, "event_time_ms required for PLACE_PENDING", 400
+            return False, "event_time_ms required for new-entry command", 400
 
         try:
             stale_minutes = int(payload.get("stale_entry_age_minutes", DEFAULT_STALE_ENTRY_MINUTES))
@@ -243,7 +244,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
 
         age_ms = int(time.time() * 1000) - event_time_ms
         if age_ms > stale_minutes * 60_000:
-            return False, f"stale PLACE_PENDING ({age_ms / 60000:.1f} min old)", 409
+            return False, f"stale new-entry command ({age_ms / 60000:.1f} min old)", 409
 
     return True, "", 200
 
