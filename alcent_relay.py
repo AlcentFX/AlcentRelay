@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from flask import Flask, Response, jsonify, request
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.3.1"
+RELAY_VERSION = "1.4.0"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
@@ -23,6 +23,7 @@ DEFAULT_STALE_ENTRY_MINUTES = int(os.environ.get("ATOS_STALE_ENTRY_MINUTES", "5"
 
 ALLOWED_COMMANDS = {
     "PLACE_PENDING",
+    "PLACE_MARKET",
     "REPLACE_PENDING",
     "CANCEL_ORDER",
     "CANCEL_BUYS",
@@ -230,7 +231,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
             return False, "trailing_distance must be >0", 400
 
     # Stale-age protection applies ONLY to new entries.
-    if command in {"PLACE_PENDING", "REPLACE_PENDING"}:
+    if command in {"PLACE_PENDING", "PLACE_MARKET", "REPLACE_PENDING"}:
         try:
             event_time_ms = int(payload.get("event_time_ms"))
         except (TypeError, ValueError):
@@ -468,4 +469,3 @@ init_db()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
-
