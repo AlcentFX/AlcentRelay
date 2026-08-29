@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import sqlite3
 import time
 from contextlib import closing
@@ -12,7 +13,7 @@ from datetime import datetime, timezone
 from flask import Flask, Response, jsonify, request
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.4.0"
+RELAY_VERSION = "1.5.0"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
@@ -55,6 +56,17 @@ ALLOWED_COMMANDS = {
 }
 
 app = Flask(__name__)
+
+CONSUMER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _consumer_id(raw: str | None) -> str:
+    value = (raw or "").strip()
+    if not value:
+        return "default"
+    if not CONSUMER_ID_RE.fullmatch(value):
+        raise ValueError("consumer_id must be 1-64 chars: A-Z a-z 0-9 _ -")
+    return value
 
 
 def db() -> sqlite3.Connection:
@@ -126,6 +138,35 @@ def init_db() -> None:
             )
             """
         )
+
+        # v1.5.0 multi-account consumer registry.
+        # Delivery remains append-only/broadcast: every consumer has its own local cursor.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS consumers (
+                consumer_id TEXT PRIMARY KEY,
+                first_seen_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL,
+                last_poll_at INTEGER,
+                last_poll_after INTEGER NOT NULL DEFAULT 0,
+                last_ack_at INTEGER,
+                last_ack_event_id TEXT,
+                last_ack_status TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS consumer_acks (
+                consumer_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                acked_at INTEGER NOT NULL,
+                status TEXT,
+                detail TEXT,
+                PRIMARY KEY (consumer_id, event_id)
+            )
+            """
+        )
         conn.commit()
 
 
@@ -142,6 +183,44 @@ def _set_state(key: str, value: str) -> None:
 def _get_state(conn: sqlite3.Connection, key: str, default: str = "") -> str:
     row = conn.execute("SELECT value FROM relay_state WHERE key=?", (key,)).fetchone()
     return row["value"] if row else default
+
+
+def _touch_consumer(
+    consumer_id: str,
+    *,
+    poll_after: int | None = None,
+    ack_event_id: str | None = None,
+    ack_status: str | None = None,
+) -> None:
+    now = int(time.time())
+    with closing(db()) as conn:
+        conn.execute(
+            """
+            INSERT INTO consumers(
+                consumer_id,first_seen_at,last_seen_at,last_poll_at,last_poll_after,
+                last_ack_at,last_ack_event_id,last_ack_status
+            ) VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(consumer_id) DO UPDATE SET
+                last_seen_at=excluded.last_seen_at,
+                last_poll_at=COALESCE(excluded.last_poll_at,consumers.last_poll_at),
+                last_poll_after=CASE
+                    WHEN excluded.last_poll_at IS NOT NULL THEN excluded.last_poll_after
+                    ELSE consumers.last_poll_after
+                END,
+                last_ack_at=COALESCE(excluded.last_ack_at,consumers.last_ack_at),
+                last_ack_event_id=COALESCE(excluded.last_ack_event_id,consumers.last_ack_event_id),
+                last_ack_status=COALESCE(excluded.last_ack_status,consumers.last_ack_status)
+            """,
+            (
+                consumer_id, now, now,
+                now if poll_after is not None else None,
+                int(poll_after or 0),
+                now if ack_event_id is not None else None,
+                ack_event_id,
+                ack_status,
+            ),
+        )
+        conn.commit()
 
 
 def _authorised(payload: dict | None = None) -> bool:
@@ -286,13 +365,30 @@ def _insert_event(payload: dict) -> tuple[bool, int | None]:
 @app.get("/atos/health")
 def health():
     try:
+        raw_consumer = request.args.get("consumer_id")
+        consumer_id = None
+        if raw_consumer:
+            try:
+                consumer_id = _consumer_id(raw_consumer)
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+            _touch_consumer(consumer_id)
+
         with closing(db()) as conn:
             total = conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"]
             rejected = conn.execute("SELECT COUNT(*) AS n FROM rejected_events").fetchone()["n"]
+            consumer_count = conn.execute("SELECT COUNT(*) AS n FROM consumers").fetchone()["n"]
             latest = conn.execute(
                 "SELECT seq,event_id,command,received_at FROM events ORDER BY seq DESC LIMIT 1"
             ).fetchone()
             last_poll = _get_state(conn, "last_poll_at", "")
+            c_row = None
+            if consumer_id:
+                c_row = conn.execute(
+                    "SELECT last_seen_at,last_poll_at,last_poll_after,last_ack_at,last_ack_event_id,last_ack_status "
+                    "FROM consumers WHERE consumer_id=?",
+                    (consumer_id,),
+                ).fetchone()
         return jsonify({
             "ok": True,
             "service": SERVICE_NAME,
@@ -304,6 +400,11 @@ def health():
             "latest_event_id": latest["event_id"] if latest else None,
             "latest_command": latest["command"] if latest else None,
             "last_mt4_poll_at": int(last_poll) if last_poll else None,
+            "consumer_count": consumer_count,
+            "consumer_id": consumer_id,
+            "consumer_last_poll_after": c_row["last_poll_after"] if c_row else None,
+            "consumer_last_ack_event_id": c_row["last_ack_event_id"] if c_row else None,
+            "consumer_last_ack_status": c_row["last_ack_status"] if c_row else None,
             "server_time": int(time.time()),
         })
     except Exception as exc:
@@ -348,8 +449,15 @@ def events():
     except ValueError:
         return "INVALID_AFTER", 400
 
+    try:
+        consumer_id = _consumer_id(request.args.get("consumer_id"))
+    except ValueError as exc:
+        return str(exc), 400
+
+    # Legacy global state retained for backward dashboard compatibility.
     _set_state("last_poll_at", str(int(time.time())))
     _set_state("last_poll_after", str(after_seq))
+    _touch_consumer(consumer_id, poll_after=after_seq)
 
     with closing(db()) as conn:
         rows = conn.execute(
@@ -375,17 +483,48 @@ def ack():
     if not event_id:
         return jsonify({"ok": False, "error": "event_id required"}), 400
 
+    try:
+        consumer_id = _consumer_id(str(payload.get("consumer_id", "default")))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
     status = str(payload.get("status", "PROCESSED"))[:80]
     detail = str(payload.get("detail", ""))[:1000]
+    now = int(time.time())
     with closing(db()) as conn:
-        cur = conn.execute(
+        exists = conn.execute("SELECT 1 FROM events WHERE event_id=?", (event_id,)).fetchone()
+        if not exists:
+            return jsonify({"ok": False, "error": "event_id not found"}), 404
+
+        # Legacy aggregate ACK fields remain for backward compatibility.
+        conn.execute(
             "UPDATE events SET acked_at=?,ack_status=?,ack_detail=? WHERE event_id=?",
-            (int(time.time()), status, detail, event_id),
+            (now, status, detail, event_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO consumer_acks(consumer_id,event_id,acked_at,status,detail)
+            VALUES(?,?,?,?,?)
+            ON CONFLICT(consumer_id,event_id) DO UPDATE SET
+                acked_at=excluded.acked_at,
+                status=excluded.status,
+                detail=excluded.detail
+            """,
+            (consumer_id, event_id, now, status, detail),
         )
         conn.commit()
-    if cur.rowcount == 0:
-        return jsonify({"ok": False, "error": "event_id not found"}), 404
-    return jsonify({"ok": True, "event_id": event_id, "status": status})
+
+    _touch_consumer(
+        consumer_id,
+        ack_event_id=event_id,
+        ack_status=status,
+    )
+    return jsonify({
+        "ok": True,
+        "consumer_id": consumer_id,
+        "event_id": event_id,
+        "status": status,
+    })
 
 
 @app.get("/dashboard")
@@ -400,6 +539,10 @@ def dashboard():
         total = conn.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"]
         rejected = conn.execute("SELECT COUNT(*) AS n FROM rejected_events").fetchone()["n"]
         acked = conn.execute("SELECT COUNT(*) AS n FROM events WHERE acked_at IS NOT NULL").fetchone()["n"]
+        consumers = conn.execute(
+            "SELECT consumer_id,last_seen_at,last_poll_at,last_poll_after,last_ack_at,last_ack_event_id,last_ack_status "
+            "FROM consumers ORDER BY consumer_id"
+        ).fetchall()
         latest = conn.execute(
             "SELECT seq,event_id,command,direction,reason,campaign_id,order_id,received_at "
             "FROM events ORDER BY seq DESC LIMIT 1"
@@ -417,6 +560,17 @@ def dashboard():
         if not v:
             return "—"
         return datetime.fromtimestamp(v, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    consumer_rows_html = "".join(
+        "<tr>"
+        f"<td class='mono'>{html.escape(c['consumer_id'])}</td>"
+        f"<td>{ts(c['last_seen_at'])}</td>"
+        f"<td>{ts(c['last_poll_at'])}</td>"
+        f"<td>{c['last_poll_after']}</td>"
+        f"<td>{html.escape(c['last_ack_status'] or '—')}</td>"
+        f"<td class='mono'>{html.escape(c['last_ack_event_id'] or '—')}</td>"
+        "</tr>" for c in consumers
+    )
 
     rows_html = "".join(
         "<tr>"
@@ -456,9 +610,12 @@ th,td{{padding:10px;border-bottom:1px solid #26374a;text-align:left;font-size:13
 <div class='card'><div class='muted'>Accepted Events</div><div class='value'>{total}</div></div>
 <div class='card'><div class='muted'>Rejected Events</div><div class='value'>{rejected}</div></div>
 <div class='card'><div class='muted'>Acknowledged</div><div class='value'>{acked}</div></div>
+<div class='card'><div class='muted'>MT4 Consumers</div><div class='value'>{len(consumers)}</div></div>
 <div class='card'><div class='muted'>Latest Received</div><div class='value' style='font-size:15px'>{latest_received}</div></div>
 </div>
 <div class='card' style='margin-bottom:12px'><div class='muted'>Latest Event ID</div><div class='mono' style='margin-top:8px'>{html.escape(latest_event or '—')}</div></div>
+<h2>MT4 Consumers</h2>
+<table><thead><tr><th>Consumer</th><th>Last Seen</th><th>Last Poll</th><th>Cursor</th><th>Last ACK</th><th>Last Event</th></tr></thead><tbody>{consumer_rows_html}</tbody></table>
 <h2>Recent Events</h2><table><thead><tr><th>Seq</th><th>Command</th><th>Side</th><th>Reason</th><th>Event ID</th><th>Received</th></tr></thead><tbody>{rows_html}</tbody></table>
 </div></body></html>"""
     return Response(page, mimetype="text/html")
