@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from flask import Flask, Response, jsonify, request
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.5.0"
+RELAY_VERSION = "1.5.1"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
@@ -49,6 +49,15 @@ ALLOWED_COMMANDS = {
     "PARTIAL_CLOSE",
     "SET_ORDER_SL",
     "SET_TRAILING_SL",
+
+    # V8 Build 029+ batched protection commands.
+    # Relay transports only; MT4 v8.10+ applies these to actual broker market positions.
+    "PROTECT_BUYS_1M_TO_EP",
+    "PROTECT_SELLS_1M_TO_EP",
+    "CLEAR_BUYS_1M_TEMP_TP",
+    "CLEAR_SELLS_1M_TEMP_TP",
+    "PROTECT_BUYS_5M_TO_EP",
+    "PROTECT_SELLS_5M_TO_EP",
 
     # V6 protective/logical-order commands. Transport only; no strategy logic here.
     "V6_INVALIDATE_ORDER",
