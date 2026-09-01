@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from flask import Flask, Response, jsonify, request
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.5.2"
+RELAY_VERSION = "1.5.3"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
@@ -60,6 +60,8 @@ ALLOWED_COMMANDS = {
     "PROTECT_SELLS_5M_TO_EP",
     "CLEAR_BUYS_5M_TEMP_TP",
     "CLEAR_SELLS_5M_TEMP_TP",
+    "CLEAR_BUYS_TP_1M_OVERRIDE",
+    "CLEAR_SELLS_TP_1M_OVERRIDE",
     "HARD_EXIT_BUYS",
     "HARD_EXIT_SELLS",
 
