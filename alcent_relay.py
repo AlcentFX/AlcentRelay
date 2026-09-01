@@ -13,10 +13,12 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
+RELAY_BUILD_ID = "ATOS_V8_1_RELAY_1_5_9"
+
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.5.6"
+RELAY_VERSION = "1.5.9"
 EXPECTED_SYSTEM = "ATOS"
-EXPECTED_AUTOMATION_VERSION = "V1.0"
+EXPECTED_AUTOMATION_VERSION = "1.0"
 
 APP_SECRET = os.environ.get("ATOS_SECRET", os.environ.get("ALCENT_SECRET", "CHANGE_ME"))
 DB_PATH = os.environ.get("ATOS_DB", os.environ.get("ALCENT_DB", "atos_events.db"))
