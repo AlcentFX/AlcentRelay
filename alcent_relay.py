@@ -16,7 +16,7 @@ from flask import Flask, Response, jsonify, request
 SERVICE_NAME = "ATOS Relay"
 RELAY_VERSION = "1.5.6"
 EXPECTED_SYSTEM = "ATOS"
-EXPECTED_AUTOMATION_VERSION = "1.0"
+EXPECTED_AUTOMATION_VERSION = "V8.1"
 
 APP_SECRET = os.environ.get("ATOS_SECRET", os.environ.get("ALCENT_SECRET", "CHANGE_ME"))
 DB_PATH = os.environ.get("ATOS_DB", os.environ.get("ALCENT_DB", "atos_events.db"))
