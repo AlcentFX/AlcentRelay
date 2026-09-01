@@ -7,13 +7,14 @@ import os
 import re
 import sqlite3
 import time
+import threading
 from contextlib import closing
 from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.5.3"
+RELAY_VERSION = "1.5.4"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
@@ -74,6 +75,53 @@ app = Flask(__name__)
 
 CONSUMER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
+# v1.5.4: MT4 polling must not contend with TradingView webhook ingestion.
+# Poll metadata is persisted at most once every 2 seconds per consumer.
+_POLL_TELEMETRY_INTERVAL = 2.0
+_poll_telemetry_lock = threading.Lock()
+_poll_telemetry_last_write: dict[str, float] = {}
+
+
+def _record_poll_telemetry(consumer_id: str, after_seq: int) -> None:
+    now_mono = time.monotonic()
+    with _poll_telemetry_lock:
+        last = _poll_telemetry_last_write.get(consumer_id, 0.0)
+        if now_mono - last < _POLL_TELEMETRY_INTERVAL:
+            return
+        _poll_telemetry_last_write[consumer_id] = now_mono
+
+    now = int(time.time())
+    try:
+        with closing(db(timeout=0.25)) as conn:
+            # Legacy dashboard state + per-consumer state in ONE short transaction.
+            conn.execute(
+                "INSERT INTO relay_state(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("last_poll_at", str(now)),
+            )
+            conn.execute(
+                "INSERT INTO relay_state(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("last_poll_after", str(after_seq)),
+            )
+            conn.execute(
+                """
+                INSERT INTO consumers(
+                    consumer_id,first_seen_at,last_seen_at,last_poll_at,last_poll_after,
+                    last_ack_at,last_ack_event_id,last_ack_status
+                ) VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(consumer_id) DO UPDATE SET
+                    last_seen_at=excluded.last_seen_at,
+                    last_poll_at=excluded.last_poll_at,
+                    last_poll_after=excluded.last_poll_after
+                """,
+                (consumer_id, now, now, now, after_seq, None, None, None),
+            )
+            conn.commit()
+    except sqlite3.OperationalError:
+        # Poll telemetry is non-critical. Never delay MT4 or TradingView for dashboard stats.
+        pass
+
 
 def _consumer_id(raw: str | None) -> str:
     value = (raw or "").strip()
@@ -84,9 +132,14 @@ def _consumer_id(raw: str | None) -> str:
     return value
 
 
-def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+def db(timeout: float = 2.0) -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=timeout)
     conn.row_factory = sqlite3.Row
+    # WAL lets MT4 reads proceed while TradingView writes.
+    # NORMAL materially reduces fsync latency while retaining durable WAL commits.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=2000")
     return conn
 
 
@@ -101,6 +154,8 @@ def _ensure_column(conn: sqlite3.Connection, table: str, name: str, definition: 
 
 def init_db() -> None:
     with closing(db()) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         # Preserve compatibility with the legacy Alcent table while extending it.
         conn.execute(
             """
@@ -345,35 +400,52 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
 
 
 def _insert_event(payload: dict) -> tuple[bool, int | None]:
+    """
+    Fast durable webhook ingress.
+
+    TradingView waits only for local validation + one SQLite WAL commit.
+    It never waits for MT4 polling, ACKs, dashboard work, or downstream execution.
+    """
     now = int(time.time())
     compact = json.dumps(payload, separators=(",", ":"))
-    with closing(db()) as conn:
+
+    # Short bounded retries cover a momentary SQLite writer collision without
+    # allowing TradingView's webhook request to sit behind a 10-second DB timeout.
+    deadline = time.monotonic() + 1.25
+    while True:
         try:
-            cur = conn.execute(
-                """
-                INSERT INTO events(
-                    event_id,payload,received_at,system,automation_version,strategy_version,
-                    command,direction,reason,trading_period_id,campaign_id,ct_campaign_id,
-                    order_id,event_time_ms,close_percent,trailing_distance,new_stop_loss
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    str(payload.get("event_id", "")), compact, now,
-                    str(payload.get("system", "")), str(payload.get("automation_version", "")),
-                    str(payload.get("strategy_version", "")), str(payload.get("command", "")),
-                    str(payload.get("direction", "")), str(payload.get("reason", "")),
-                    str(payload.get("trading_period_id", "")), str(payload.get("campaign_id", "")),
-                    str(payload.get("ct_campaign_id", "")), str(payload.get("order_id", "")),
-                    int(payload.get("event_time_ms", 0) or 0),
-                    float(payload.get("close_percent", 0) or 0),
-                    float(payload.get("trailing_distance", 0) or 0),
-                    float(payload.get("new_stop_loss", 0) or 0),
-                ),
-            )
-            conn.commit()
-            return True, int(cur.lastrowid)
-        except sqlite3.IntegrityError:
-            return False, None
+            with closing(db(timeout=0.20)) as conn:
+                try:
+                    cur = conn.execute(
+                        """
+                        INSERT INTO events(
+                            event_id,payload,received_at,system,automation_version,strategy_version,
+                            command,direction,reason,trading_period_id,campaign_id,ct_campaign_id,
+                            order_id,event_time_ms,close_percent,trailing_distance,new_stop_loss
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            str(payload.get("event_id", "")), compact, now,
+                            str(payload.get("system", "")), str(payload.get("automation_version", "")),
+                            str(payload.get("strategy_version", "")), str(payload.get("command", "")),
+                            str(payload.get("direction", "")), str(payload.get("reason", "")),
+                            str(payload.get("trading_period_id", "")), str(payload.get("campaign_id", "")),
+                            str(payload.get("ct_campaign_id", "")), str(payload.get("order_id", "")),
+                            int(payload.get("event_time_ms", 0) or 0),
+                            float(payload.get("close_percent", 0) or 0),
+                            float(payload.get("trailing_distance", 0) or 0),
+                            float(payload.get("new_stop_loss", 0) or 0),
+                        ),
+                    )
+                    conn.commit()
+                    return True, int(cur.lastrowid)
+                except sqlite3.IntegrityError:
+                    # Duplicate event_id is an idempotent success.
+                    return False, None
+        except sqlite3.OperationalError as exc:
+            if time.monotonic() >= deadline:
+                raise exc
+            time.sleep(0.015)
 
 
 @app.get("/health")
@@ -442,7 +514,17 @@ def tradingview():
         _record_rejection(payload, reason)
         return jsonify({"ok": False, "error": reason, "event_id": payload.get("event_id")}), code
 
-    inserted, seq = _insert_event(payload)
+    try:
+        inserted, seq = _insert_event(payload)
+    except sqlite3.OperationalError:
+        # Fail fast rather than exceeding TradingView's webhook timeout.
+        # TradingView will visibly report delivery failure instead of an ambiguous long hang.
+        return jsonify({
+            "ok": False,
+            "error": "relay database temporarily busy",
+            "event_id": payload.get("event_id"),
+        }), 503
+
     return jsonify({
         "ok": True,
         "inserted": inserted,
@@ -469,12 +551,10 @@ def events():
     except ValueError as exc:
         return str(exc), 400
 
-    # Legacy global state retained for backward dashboard compatibility.
-    _set_state("last_poll_at", str(int(time.time())))
-    _set_state("last_poll_after", str(after_seq))
-    _touch_consumer(consumer_id, poll_after=after_seq)
+    # v1.5.4: non-critical poll telemetry is throttled and never blocks event delivery.
+    _record_poll_telemetry(consumer_id, after_seq)
 
-    with closing(db()) as conn:
+    with closing(db(timeout=0.5)) as conn:
         rows = conn.execute(
             "SELECT seq,payload FROM events WHERE seq>? ORDER BY seq ASC LIMIT ?",
             (after_seq, MAX_BATCH),
@@ -527,13 +607,23 @@ def ack():
             """,
             (consumer_id, event_id, now, status, detail),
         )
+        # Update consumer ACK metadata in the SAME transaction to reduce writer contention.
+        conn.execute(
+            """
+            INSERT INTO consumers(
+                consumer_id,first_seen_at,last_seen_at,last_poll_at,last_poll_after,
+                last_ack_at,last_ack_event_id,last_ack_status
+            ) VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(consumer_id) DO UPDATE SET
+                last_seen_at=excluded.last_seen_at,
+                last_ack_at=excluded.last_ack_at,
+                last_ack_event_id=excluded.last_ack_event_id,
+                last_ack_status=excluded.last_ack_status
+            """,
+            (consumer_id, now, now, None, 0, now, event_id, status),
+        )
         conn.commit()
 
-    _touch_consumer(
-        consumer_id,
-        ack_event_id=event_id,
-        ack_status=status,
-    )
     return jsonify({
         "ok": True,
         "consumer_id": consumer_id,
