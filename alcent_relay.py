@@ -13,10 +13,10 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
-RELAY_BUILD_ID = "ATOS_V8_1_RELAY_1_5_9"
+RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_6_0"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.5.9"
+RELAY_VERSION = "1.6.0"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
@@ -75,6 +75,16 @@ ALLOWED_COMMANDS = {
     "CLEAR_SELLS_TP_1M_OVERRIDE",
     "HARD_EXIT_BUYS",
     "HARD_EXIT_SELLS",
+
+    # KISS V1/V2 isolated commands. strategy_id is preserved in the raw payload.
+    "PROTECT_KISS_V1_BUYS",
+    "PROTECT_KISS_V1_SELLS",
+    "PROTECT_KISS_V2_BUYS",
+    "PROTECT_KISS_V2_SELLS",
+    "HARD_EXIT_KISS_V1_BUYS",
+    "HARD_EXIT_KISS_V1_SELLS",
+    "HARD_EXIT_KISS_V2_BUYS",
+    "HARD_EXIT_KISS_V2_SELLS",
 
     # V6 protective/logical-order commands. Transport only; no strategy logic here.
     "V6_INVALIDATE_ORDER",
