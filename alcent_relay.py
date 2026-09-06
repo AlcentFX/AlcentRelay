@@ -8,15 +8,17 @@ import re
 import sqlite3
 import time
 import threading
+import urllib.request
+import urllib.error
 from contextlib import closing
 from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
-RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_6_1"
+RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_6_2_NEWS_PROTECTION"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.6.1"
+RELAY_VERSION = "1.6.2"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
@@ -24,6 +26,21 @@ APP_SECRET = os.environ.get("ATOS_SECRET", os.environ.get("ALCENT_SECRET", "CHAN
 DB_PATH = os.environ.get("ATOS_DB", os.environ.get("ALCENT_DB", "atos_events.db"))
 MAX_BATCH = int(os.environ.get("ATOS_MAX_BATCH", "100"))
 DEFAULT_STALE_ENTRY_MINUTES = int(os.environ.get("ATOS_STALE_ENTRY_MINUTES", "5"))
+
+# v1.6.2 — USD High-Impact News Protection calendar.
+# Forex Factory public weekly export is cached server-side so MT4 does not need
+# a second WebRequest allow-list entry or its own JSON calendar parser.
+FF_CALENDAR_URL = os.environ.get(
+    "ATOS_FF_CALENDAR_URL",
+    "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+)
+NEWS_CACHE_TTL_SECONDS = int(os.environ.get("ATOS_NEWS_CACHE_TTL_SECONDS", "600"))
+NEWS_HTTP_TIMEOUT_SECONDS = float(os.environ.get("ATOS_NEWS_HTTP_TIMEOUT_SECONDS", "5"))
+
+_news_cache_lock = threading.Lock()
+_news_cache_events: list[dict] = []
+_news_cache_fetched_at: float = 0.0
+_news_cache_last_error: str = ""
 
 ALLOWED_COMMANDS = {
     "PLACE_PENDING",
@@ -470,6 +487,168 @@ def _insert_event(payload: dict) -> tuple[bool, int | None]:
             if time.monotonic() >= deadline:
                 raise exc
             time.sleep(0.015)
+
+
+
+def _parse_event_datetime(value: str) -> datetime | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        # Forex Factory weekly JSON uses ISO-8601 with an explicit offset.
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _normalise_ff_events(raw_events: object) -> list[dict]:
+    if not isinstance(raw_events, list):
+        return []
+    out: list[dict] = []
+    for item in raw_events:
+        if not isinstance(item, dict):
+            continue
+        when = _parse_event_datetime(str(item.get("date", "")))
+        if when is None:
+            continue
+        out.append({
+            "title": str(item.get("title", "")).strip(),
+            "country": str(item.get("country", "")).strip().upper(),
+            "impact": str(item.get("impact", "")).strip().title(),
+            "when_utc": when,
+        })
+    out.sort(key=lambda e: e["when_utc"])
+    return out
+
+
+def _refresh_news_cache(force: bool = False) -> tuple[list[dict], bool, str, int | None]:
+    global _news_cache_events, _news_cache_fetched_at, _news_cache_last_error
+
+    now = time.time()
+    with _news_cache_lock:
+        fresh = (
+            _news_cache_events
+            and _news_cache_fetched_at > 0
+            and now - _news_cache_fetched_at < max(60, NEWS_CACHE_TTL_SECONDS)
+        )
+        if fresh and not force:
+            return list(_news_cache_events), True, "", int(now - _news_cache_fetched_at)
+
+        try:
+            req = urllib.request.Request(
+                FF_CALENDAR_URL,
+                headers={
+                    "User-Agent": "ATOS-Relay/1.6.2",
+                    "Accept": "application/json",
+                },
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=NEWS_HTTP_TIMEOUT_SECONDS) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            parsed = _normalise_ff_events(payload)
+            if not parsed:
+                raise ValueError("calendar returned no parseable events")
+            _news_cache_events = parsed
+            _news_cache_fetched_at = now
+            _news_cache_last_error = ""
+            return list(_news_cache_events), True, "", 0
+        except Exception as exc:
+            _news_cache_last_error = f"{type(exc).__name__}: {exc}"
+            # Keep serving the last successful weekly cache if a refresh fails.
+            if _news_cache_events and _news_cache_fetched_at > 0:
+                return (
+                    list(_news_cache_events),
+                    True,
+                    _news_cache_last_error,
+                    int(now - _news_cache_fetched_at),
+                )
+            return [], False, _news_cache_last_error, None
+
+
+def _news_protection_snapshot(before_minutes: int, after_minutes: int) -> dict:
+    events, calendar_ok, refresh_error, cache_age = _refresh_news_cache()
+    now_utc = datetime.now(timezone.utc)
+    before = max(0, min(240, int(before_minutes)))
+    after = max(0, min(240, int(after_minutes)))
+
+    candidates = [
+        e for e in events
+        if e["country"] == "USD" and e["impact"] == "High"
+    ]
+
+    active_event = None
+    next_event = None
+    for e in candidates:
+        start = e["when_utc"].timestamp() - before * 60
+        end = e["when_utc"].timestamp() + after * 60
+        now_ts = now_utc.timestamp()
+        if start <= now_ts <= end:
+            active_event = e
+            break
+        if e["when_utc"] > now_utc and next_event is None:
+            next_event = e
+
+    chosen = active_event or next_event
+    result = {
+        "ok": True,
+        "calendar_ok": calendar_ok,
+        "active": active_event is not None,
+        "currency": "USD",
+        "impact": "High",
+        "minutes_before": before,
+        "minutes_after": after,
+        "source": FF_CALENDAR_URL,
+        "cache_age_seconds": cache_age,
+        "refresh_error": refresh_error or None,
+        "server_time_epoch": int(now_utc.timestamp()),
+    }
+
+    if chosen is not None:
+        when = chosen["when_utc"]
+        result.update({
+            "event_title": chosen["title"],
+            "event_time_epoch": int(when.timestamp()),
+            "event_time_utc": when.isoformat(),
+            "seconds_to_event": int(when.timestamp() - now_utc.timestamp()),
+            "window_start_epoch": int(when.timestamp() - before * 60),
+            "window_end_epoch": int(when.timestamp() + after * 60),
+        })
+    else:
+        result.update({
+            "event_title": None,
+            "event_time_epoch": 0,
+            "event_time_utc": None,
+            "seconds_to_event": None,
+            "window_start_epoch": 0,
+            "window_end_epoch": 0,
+        })
+    return result
+
+
+@app.get("/atos/news-protection")
+def news_protection():
+    if not _authorised():
+        return jsonify({"ok": False, "error": "unauthorised"}), 401
+    try:
+        before = int(request.args.get("before", "30"))
+        after = int(request.args.get("after", "30"))
+    except ValueError:
+        return jsonify({"ok": False, "error": "before/after must be integers"}), 400
+
+    try:
+        return jsonify(_news_protection_snapshot(before, after)), 200
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "calendar_ok": False,
+            "active": False,
+            "error": str(exc),
+        }), 500
 
 
 @app.get("/health")
