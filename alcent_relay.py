@@ -18,7 +18,7 @@ from flask import Flask, Response, jsonify, request
 RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_6_2_NEWS_PROTECTION"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.6.2"
+RELAY_VERSION = "1.6.3"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
@@ -27,7 +27,7 @@ DB_PATH = os.environ.get("ATOS_DB", os.environ.get("ALCENT_DB", "atos_events.db"
 MAX_BATCH = int(os.environ.get("ATOS_MAX_BATCH", "100"))
 DEFAULT_STALE_ENTRY_MINUTES = int(os.environ.get("ATOS_STALE_ENTRY_MINUTES", "5"))
 
-# v1.6.2 — USD High-Impact News Protection calendar.
+# v1.6.3 — Adds KISS V2 Stage-2 protection command transport; preserves USD High-Impact News Protection calendar.
 # Forex Factory public weekly export is cached server-side so MT4 does not need
 # a second WebRequest allow-list entry or its own JSON calendar parser.
 FF_CALENDAR_URL = os.environ.get(
@@ -98,6 +98,8 @@ ALLOWED_COMMANDS = {
     "PROTECT_KISS_V1_SELLS",
     "PROTECT_KISS_V2_BUYS",
     "PROTECT_KISS_V2_SELLS",
+    "PROTECT_STAGE2_KISS_V2_BUYS",
+    "PROTECT_STAGE2_KISS_V2_SELLS",
     "CLEAR_KISS_V1_BUYS_PROTECTION_TP",
     "CLEAR_KISS_V1_SELLS_PROTECTION_TP",
     "CLEAR_KISS_V2_BUYS_PROTECTION_TP",
@@ -543,7 +545,7 @@ def _refresh_news_cache(force: bool = False) -> tuple[list[dict], bool, str, int
             req = urllib.request.Request(
                 FF_CALENDAR_URL,
                 headers={
-                    "User-Agent": "ATOS-Relay/1.6.2",
+                    "User-Agent": "ATOS-Relay/1.6.3",
                     "Accept": "application/json",
                 },
                 method="GET",
