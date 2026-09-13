@@ -15,10 +15,10 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
-RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_6_2_NEWS_PROTECTION"
+RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_6_4_KISS_V5_SIGNAL_PORTFOLIO_NEWS"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.6.3"
+RELAY_VERSION = "1.6.4"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
@@ -27,7 +27,7 @@ DB_PATH = os.environ.get("ATOS_DB", os.environ.get("ALCENT_DB", "atos_events.db"
 MAX_BATCH = int(os.environ.get("ATOS_MAX_BATCH", "100"))
 DEFAULT_STALE_ENTRY_MINUTES = int(os.environ.get("ATOS_STALE_ENTRY_MINUTES", "5"))
 
-# v1.6.3 — Adds KISS V2 Stage-2 protection command transport; preserves USD High-Impact News Protection calendar.
+# v1.6.4 — Adds atomic KISS V5 signal/portfolio-action transport; preserves USD High-Impact News Protection calendar.
 # Forex Factory public weekly export is cached server-side so MT4 does not need
 # a second WebRequest allow-list entry or its own JSON calendar parser.
 FF_CALENDAR_URL = os.environ.get(
@@ -43,6 +43,7 @@ _news_cache_fetched_at: float = 0.0
 _news_cache_last_error: str = ""
 
 ALLOWED_COMMANDS = {
+    "KISS_V5_SIGNAL",
     "PLACE_PENDING",
     "PLACE_MARKET",
     "REPLACE_PENDING",
@@ -423,7 +424,22 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
             return False, "trailing_distance must be >0", 400
 
     # Stale-age protection applies ONLY to new entries.
-    if command in {"PLACE_PENDING", "PLACE_MARKET", "REPLACE_PENDING"}:
+    if command == "KISS_V5_SIGNAL":
+        direction = str(payload.get("direction", "")).strip().upper()
+        if direction not in {"BUY", "SELL"}:
+            return False, "BUY/SELL direction required for KISS_V5_SIGNAL", 400
+        entry_command = str(payload.get("entry_command", "")).strip().upper()
+        if entry_command not in {"PLACE_MARKET", "PLACE_PENDING"}:
+            return False, "entry_command PLACE_MARKET/PLACE_PENDING required for KISS_V5_SIGNAL", 400
+        if not str(payload.get("order_id", "")).strip():
+            return False, "order_id required for KISS_V5_SIGNAL", 400
+        try:
+            if float(payload.get("entry_price", 0) or 0) <= 0:
+                return False, "positive entry_price required for KISS_V5_SIGNAL", 400
+        except (TypeError, ValueError):
+            return False, "valid entry_price required for KISS_V5_SIGNAL", 400
+
+    if command in {"KISS_V5_SIGNAL", "PLACE_PENDING", "PLACE_MARKET", "REPLACE_PENDING"}:
         try:
             event_time_ms = int(payload.get("event_time_ms"))
         except (TypeError, ValueError):
