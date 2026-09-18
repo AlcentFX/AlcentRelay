@@ -27,7 +27,7 @@ DB_PATH = os.environ.get("ATOS_DB", os.environ.get("ALCENT_DB", "atos_events.db"
 MAX_BATCH = int(os.environ.get("ATOS_MAX_BATCH", "100"))
 DEFAULT_STALE_ENTRY_MINUTES = int(os.environ.get("ATOS_STALE_ENTRY_MINUTES", "5"))
 
-# v1.6.9 — Adds atomic KISS V5 signal/portfolio-action transport; preserves USD High-Impact News Protection calendar.
+# v1.7.0 — Adds atomic KISS V5 signal/portfolio-action transport; preserves USD High-Impact News Protection calendar.
 # Forex Factory public weekly export is cached server-side so MT4 does not need
 # a second WebRequest allow-list entry or its own JSON calendar parser.
 FF_CALENDAR_URL = os.environ.get(
@@ -45,7 +45,9 @@ _news_cache_last_error: str = ""
 ALLOWED_COMMANDS = {
     "KISS_V5_SIGNAL",
     "KISS_V6_SIGNAL",
-    "KISS_V6_5M_SIGNAL",
+    "KISS_V6_5M_SIGNAL",  # legacy compatibility
+    "KISS_V6_15M_SIGNAL",
+    "KISS_V6_15M_DIRECTION_FLIP_PROTECT",
     "KISS_V6_1H_ZONE_PORTFOLIO_PROTECT",
     "PLACE_PENDING",
     "PLACE_MARKET",
@@ -427,7 +429,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
             return False, "trailing_distance must be >0", 400
 
     # Stale-age protection applies ONLY to new entries.
-    if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL"}:
+    if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL", "KISS_V6_15M_SIGNAL"}:
         direction = str(payload.get("direction", "")).strip().upper()
         if direction not in {"BUY", "SELL"}:
             return False, "BUY/SELL direction required for KISS V5/V6 signal", 400
@@ -442,7 +444,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
         except (TypeError, ValueError):
             return False, "valid entry_price required for KISS V5/V6 signal", 400
 
-        # v1.6.9/B019: pending KISS V5 entries are permitted only when the
+        # v1.7.0/B019: pending KISS V5 entries are permitted only when the
         # transported entry_price exactly matches the EP printed on TradingView.
         if entry_command == "PLACE_PENDING":
             try:
@@ -455,7 +457,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
             if abs(entry_price - label_ep) > 1e-6:
                 return False, "pending KISS V5/V6 signal entry_price does not match label_ep", 400
 
-    if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL", "PLACE_PENDING", "PLACE_MARKET", "REPLACE_PENDING"}:
+    if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL", "KISS_V6_15M_SIGNAL", "PLACE_PENDING", "PLACE_MARKET", "REPLACE_PENDING"}:
         try:
             event_time_ms = int(payload.get("event_time_ms"))
         except (TypeError, ValueError):
