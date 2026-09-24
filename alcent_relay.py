@@ -1,4 +1,4 @@
-# ATOS Relay v1.2.1 — V6 command-contract compatibility
+# ATOS Relay v1.8.1 — KISS V7 AOI rejection protection
 from __future__ import annotations
 
 import html
@@ -48,6 +48,7 @@ ALLOWED_COMMANDS = {
     "KISS_V6_5M_SIGNAL",  # legacy compatibility
     "KISS_V6_15M_SIGNAL",
     "KISS_V7_SIGNAL",
+    "KISS_V7_AOI_PORTFOLIO_PROTECT",
     "KISS_V6_15M_DIRECTION_FLIP_PROTECT",
     "KISS_V6_1H_ZONE_PORTFOLIO_PROTECT",
     "PLACE_PENDING",
@@ -430,6 +431,13 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
             return False, "trailing_distance must be >0", 400
 
     # Stale-age protection applies ONLY to new entries.
+    if command == "KISS_V7_AOI_PORTFOLIO_PROTECT":
+        direction = str(payload.get("direction", "")).strip().upper()
+        if direction not in {"BUY", "SELL"}:
+            return False, "direction BUY/SELL required for KISS V7 AOI protection", 400
+        if str(payload.get("strategy_id", "")).strip() != "KISS_V7_5M":
+            return False, "strategy_id KISS_V7_5M required for KISS V7 AOI protection", 400
+
     if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL", "KISS_V6_15M_SIGNAL", "KISS_V7_SIGNAL"}:
         direction = str(payload.get("direction", "")).strip().upper()
         if direction not in {"BUY", "SELL"}:
