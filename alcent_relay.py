@@ -1,4 +1,4 @@
-# ATOS Relay v1.8.1 — KISS V7 AOI rejection protection
+# ATOS Relay v1.8.2 — KISS V7 B008 wick structures + 1S/AOI basket protection
 from __future__ import annotations
 
 import html
@@ -15,10 +15,10 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
-RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_0_KISS_V7_5M"
+RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_2_KISS_V7_B008"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.8.0"
+RELAY_VERSION = "1.8.2"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
