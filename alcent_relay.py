@@ -1,4 +1,4 @@
-# ATOS Relay v1.8.2 — KISS V7 B008 wick structures + 1S/AOI basket protection
+# ATOS Relay v1.8.3 — KISS V7 B008a dual-entry compatible + 1S/AOI basket protection
 from __future__ import annotations
 
 import html
@@ -18,7 +18,7 @@ from flask import Flask, Response, jsonify, request
 RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_2_KISS_V7_B008"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.8.2"
+RELAY_VERSION = "1.8.3"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
