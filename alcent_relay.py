@@ -1,4 +1,4 @@
-# ATOS Relay v1.8.3 — KISS V7 B008a dual-entry compatible + 1S/AOI basket protection
+# ATOS Relay v1.8.4 — KISS V7 B008d dual-entry + unified 1S/6S/AOI basket protection
 from __future__ import annotations
 
 import html
@@ -15,10 +15,10 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
-RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_2_KISS_V7_B008"
+RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_4_KISS_V7_B008D"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.8.3"
+RELAY_VERSION = "1.8.4"
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
@@ -434,9 +434,9 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
     if command == "KISS_V7_AOI_PORTFOLIO_PROTECT":
         direction = str(payload.get("direction", "")).strip().upper()
         if direction not in {"BUY", "SELL"}:
-            return False, "direction BUY/SELL required for KISS V7 AOI protection", 400
+            return False, "direction BUY/SELL required for KISS V7 basket protection", 400
         if str(payload.get("strategy_id", "")).strip() != "KISS_V7_5M":
-            return False, "strategy_id KISS_V7_5M required for KISS V7 AOI protection", 400
+            return False, "strategy_id KISS_V7_5M required for KISS V7 basket protection", 400
 
     if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL", "KISS_V6_15M_SIGNAL", "KISS_V7_SIGNAL"}:
         direction = str(payload.get("direction", "")).strip().upper()
