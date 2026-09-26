@@ -1,4 +1,4 @@
-# ATOS Relay v1.8.4 — KISS V7 B008d dual-entry + unified 1S/6S/AOI basket protection
+# ATOS Relay v1.8.5 — KISS V7 B008e triple-entry + unified 1S/6S/AOI basket protection
 from __future__ import annotations
 
 import html
@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
-RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_4_KISS_V7_B008D"
+RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_4_KISS_V7_B008E"
 
 SERVICE_NAME = "ATOS Relay"
 RELAY_VERSION = "1.8.4"
@@ -452,6 +452,15 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
                 return False, "positive entry_price required for KISS V5/V6 signal", 400
         except (TypeError, ValueError):
             return False, "valid entry_price required for KISS V5/V6 signal", 400
+
+        # v1.8.5 / V7 B008e: every V7 signal also transports EP3, the opening
+        # price of the current signal-producing structure. MT4 sizes this leg at 2x.
+        if command == "KISS_V7_SIGNAL":
+            try:
+                if float(payload.get("entry_price_3", 0) or 0) <= 0:
+                    return False, "positive entry_price_3 required for KISS V7 triple-entry signal", 400
+            except (TypeError, ValueError):
+                return False, "valid entry_price_3 required for KISS V7 triple-entry signal", 400
 
         # v1.7.1/B019: pending KISS V5 entries are permitted only when the
         # transported entry_price exactly matches the EP printed on TradingView.
