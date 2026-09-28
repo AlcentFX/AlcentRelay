@@ -1,4 +1,4 @@
-# ATOS Relay v1.8.5 — KISS V7 B008e triple-entry + unified 1S/6S/AOI basket protection
+# ATOS Relay v1.8.6 — KISS V7 B008f triple-entry + unified 1S/6S/AOI basket protection
 from __future__ import annotations
 
 import html
@@ -453,8 +453,8 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
         except (TypeError, ValueError):
             return False, "valid entry_price required for KISS V5/V6 signal", 400
 
-        # v1.8.5 / V7 B008e: every V7 signal also transports EP3, the opening
-        # price of the current signal-producing structure. MT4 sizes this leg at 2x.
+        # v1.8.6 / V7 B008f: every V7 signal also transports EP3, the wick extreme
+        # of the current signal-producing structure (BUY low / SELL high). MT4 sizes this leg at 2x.
         if command == "KISS_V7_SIGNAL":
             try:
                 if float(payload.get("entry_price_3", 0) or 0) <= 0:
