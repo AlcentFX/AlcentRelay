@@ -435,8 +435,11 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
         direction = str(payload.get("direction", "")).strip().upper()
         if direction not in {"BUY", "SELL"}:
             return False, "direction BUY/SELL required for KISS V7 basket protection", 400
-        if str(payload.get("strategy_id", "")).strip() != "KISS_V7_5M":
-            return False, "strategy_id KISS_V7_5M required for KISS V7 basket protection", 400
+        if str(payload.get("strategy_id", "")).strip() not in {"KISS_V7_5M", "KISS_V7_15M"}:
+            return False, "KISS V7 protection requires KISS_V7_5M or KISS_V7_15M strategy_id", 400
+        expected_tf = 15 if payload.get("strategy_id") == "KISS_V7_15M" else 5
+        if int(payload.get("management_tf_minutes", expected_tf)) != expected_tf:
+            return False, "KISS V7 protection timeframe does not match strategy_id", 400
 
     if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL", "KISS_V6_15M_SIGNAL", "KISS_V7_SIGNAL"}:
         direction = str(payload.get("direction", "")).strip().upper()
@@ -456,6 +459,17 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
         # v1.8.6 / V7 B008f: every V7 signal also transports EP3, the wick extreme
         # of the current signal-producing structure (BUY low / SELL high). MT4 sizes this leg at 2x.
         if command == "KISS_V7_SIGNAL":
+            strategy_id = str(payload.get("strategy_id", "")).strip()
+            if strategy_id not in {"KISS_V7_5M", "KISS_V7_15M"}:
+                return False, "unsupported KISS V7 strategy_id", 400
+            expected_tf = 15 if strategy_id == "KISS_V7_15M" else 5
+            try:
+                if int(payload.get("management_tf_minutes", expected_tf)) != expected_tf:
+                    return False, "KISS V7 signal timeframe does not match strategy_id", 400
+            except (ValueError, TypeError):
+                return False, "invalid KISS V7 management timeframe", 400
+            if expected_tf == 15 and (entry_command != "PLACE_PENDING" or payload.get("pending_type") != "LIMIT"):
+                return False, "15M KISS V7 requires LIMIT pending entries", 400
             try:
                 if float(payload.get("entry_price_3", 0) or 0) <= 0:
                     return False, "positive entry_price_3 required for KISS V7 triple-entry signal", 400
