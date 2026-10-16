@@ -1,4 +1,4 @@
-# ATOS Relay v1.8.6 — KISS V7 B008f triple-entry + unified 1S/6S/AOI basket protection
+# ATOS Relay v1.8.8 — KISS V7 5M/15M Build 005 event ID pass-through
 from __future__ import annotations
 
 import html
@@ -15,10 +15,12 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
-RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_4_KISS_V7_B008E"
+RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_8_V7_DUAL_ENGINE_EVENT_IDS"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.8.4"
+RELAY_VERSION = "1.8.8"
+# TradingView is authoritative for event_id. Preserve incoming IDs unchanged,
+# including V7_5M_B005 and V7_15M_B005, for deduplication and MT4 ACKs.
 EXPECTED_SYSTEM = "ATOS"
 EXPECTED_AUTOMATION_VERSION = "1.0"
 
