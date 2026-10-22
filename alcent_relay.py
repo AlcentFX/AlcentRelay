@@ -1,4 +1,4 @@
-# ATOS Relay v1.8.8 — KISS V7 5M/15M Build 005 event ID pass-through
+# ATOS Relay v1.8.9 — V7 5M/15M plus independent RSI B002 event routing
 from __future__ import annotations
 
 import html
@@ -15,10 +15,10 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
-RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_8_V7_DUAL_ENGINE_EVENT_IDS"
+RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_9_V7_RSI_B002"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.8.8"
+RELAY_VERSION = "1.8.9"
 # TradingView is authoritative for event_id. Preserve incoming IDs unchanged,
 # including V7_5M_B005 and V7_15M_B005, for deduplication and MT4 ACKs.
 EXPECTED_SYSTEM = "ATOS"
@@ -51,6 +51,8 @@ ALLOWED_COMMANDS = {
     "KISS_V6_15M_SIGNAL",
     "KISS_V7_SIGNAL",
     "KISS_V7_AOI_PORTFOLIO_PROTECT",
+    "KISS_V7_RSI_MARKET_ENTRY",
+    "KISS_V7_RSI_OPPOSITE_PROTECT",
     "KISS_V6_15M_DIRECTION_FLIP_PROTECT",
     "KISS_V6_1H_ZONE_PORTFOLIO_PROTECT",
     "PLACE_PENDING",
@@ -402,6 +404,32 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
     if "execution_allowed" in payload and payload.get("execution_allowed") is not True:
         return False, "execution_not_allowed", 403
 
+    # v1.8.9: strict, isolated RSI B002 command contract.
+    if command in {"KISS_V7_RSI_MARKET_ENTRY", "KISS_V7_RSI_OPPOSITE_PROTECT"}:
+        if payload.get("strategy_id") != "KISS_V7_RSI" or payload.get("strategy_version") != "V7-RSI-B002":
+            return False, "RSI strategy/version mismatch", 400
+        if payload.get("direction") not in ("BUY", "SELL"):
+            return False, "RSI direction must be BUY or SELL", 400
+        if payload.get("management_tf_minutes") != 5:
+            return False, "RSI timeframe must be 5", 400
+        if command == "KISS_V7_RSI_MARKET_ENTRY":
+            if payload.get("entry_command") != "MARKET" or payload.get("entry_count") != 1:
+                return False, "RSI requires exactly one market entry", 400
+            required = {"initial_sl_distance": 30.0, "tp1_distance": 5.0,
+                        "tp1_close_pct": 50, "tp2_distance": 10.0,
+                        "lot_multiplier": 1.5}
+            for key, expected in required.items():
+                value = payload.get(key)
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) != expected:
+                    return False, f"invalid RSI {key}", 400
+            if payload.get("tp1_move_sl_to_ep") is not True or payload.get("tp2_close_pct") != 100:
+                return False, "invalid RSI profit management", 400
+        else:
+            if payload.get("profitable_action") != "SL_TO_EP" or payload.get("nonprofitable_action") != "TP_TO_EP":
+                return False, "invalid RSI protection action", 400
+            if payload.get("preserve_initial_sl") is not True:
+                return False, "RSI must preserve initial SL", 400
+
     # D8 management command contract.
     if command in {"MANAGE_ORDER", "PARTIAL_CLOSE", "SET_ORDER_SL", "SET_TRAILING_SL"}:
         order_id = str(payload.get("order_id", "")).strip()
@@ -491,7 +519,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
             if abs(entry_price - label_ep) > 1e-6:
                 return False, "pending KISS V5/V6 signal entry_price does not match label_ep", 400
 
-    if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL", "KISS_V6_15M_SIGNAL", "KISS_V7_SIGNAL", "PLACE_PENDING", "PLACE_MARKET", "REPLACE_PENDING"}:
+    if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL", "KISS_V6_15M_SIGNAL", "KISS_V7_SIGNAL", "KISS_V7_RSI_MARKET_ENTRY", "PLACE_PENDING", "PLACE_MARKET", "REPLACE_PENDING"}:
         try:
             event_time_ms = int(payload.get("event_time_ms"))
         except (TypeError, ValueError):
