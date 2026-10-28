@@ -1,4 +1,4 @@
-# ATOS Relay v1.8.12 — V7 5M/15M plus independent RSI B007 MARKET routing
+# ATOS Relay v1.8.13 — V7 5M/15M plus independent RSI B008 conditional LIMIT/MARKET routing
 from __future__ import annotations
 
 import html
@@ -16,10 +16,10 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
-RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_11_V7_RSI_B007"
+RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_13_V7_RSI_B008"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.8.11"
+RELAY_VERSION = "1.8.13"
 # TradingView is authoritative for event_id. Preserve incoming IDs unchanged,
 # including V7_5M_B005 and V7_15M_B005, for deduplication and MT4 ACKs.
 EXPECTED_SYSTEM = "ATOS"
@@ -53,6 +53,7 @@ ALLOWED_COMMANDS = {
     "KISS_V7_SIGNAL",
     "KISS_V7_AOI_PORTFOLIO_PROTECT",
     "KISS_V7_RSI_MARKET_ENTRY",
+    "KISS_V7_RSI_LIMIT_ENTRY",
     "KISS_V7_RSI_OPPOSITE_PROTECT",
     "KISS_V6_15M_DIRECTION_FLIP_PROTECT",
     "KISS_V6_1H_ZONE_PORTFOLIO_PROTECT",
@@ -405,17 +406,25 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
     if "execution_allowed" in payload and payload.get("execution_allowed") is not True:
         return False, "execution_not_allowed", 403
 
-    # v1.8.12: strict, isolated RSI B007 MARKET command contract.
-    if command in {"KISS_V7_RSI_MARKET_ENTRY", "KISS_V7_RSI_OPPOSITE_PROTECT"}:
-        if payload.get("strategy_id") != "KISS_V7_RSI" or payload.get("strategy_version") != "V7-RSI-B007":
+    # v1.8.13: strict, isolated RSI B008 conditional LIMIT/MARKET command contract.
+    if command in {"KISS_V7_RSI_MARKET_ENTRY", "KISS_V7_RSI_LIMIT_ENTRY", "KISS_V7_RSI_OPPOSITE_PROTECT"}:
+        if payload.get("strategy_id") != "KISS_V7_RSI" or payload.get("strategy_version") != "V7-RSI-B008":
             return False, "RSI strategy/version mismatch", 400
         if payload.get("direction") not in ("BUY", "SELL"):
             return False, "RSI direction must be BUY or SELL", 400
         if payload.get("management_tf_minutes") != 5:
             return False, "RSI timeframe must be 5", 400
-        if command == "KISS_V7_RSI_MARKET_ENTRY":
-            if payload.get("entry_command") != "MARKET" or payload.get("entry_count") != 1:
-                return False, "RSI requires exactly one MARKET entry", 400
+        if command in {"KISS_V7_RSI_MARKET_ENTRY", "KISS_V7_RSI_LIMIT_ENTRY"}:
+            expected_entry = "LIMIT" if command == "KISS_V7_RSI_LIMIT_ENTRY" else "MARKET"
+            if payload.get("entry_command") != expected_entry or payload.get("entry_count") != 1:
+                return False, "RSI entry command/count mismatch", 400
+            if command == "KISS_V7_RSI_LIMIT_ENTRY":
+                ep = payload.get("entry_price")
+                sc = payload.get("signal_close")
+                if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not (30.0 < float(v) < 1000000.0) for v in (ep, sc)):
+                    return False, "RSI LIMIT invalid reference prices", 400
+                if not (ep < sc if payload["direction"] == "BUY" else ep > sc):
+                    return False, "RSI LIMIT reference wick condition not satisfied", 400
             required = {"initial_sl_distance": 20.0, "tp1_distance": 5.0,
                         "tp1_close_pct": 50, "tp2_distance": 10.0,
                         "lot_multiplier": 1.1}
@@ -529,7 +538,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
             if abs(entry_price - label_ep) > 1e-6:
                 return False, "pending KISS V5/V6 signal entry_price does not match label_ep", 400
 
-    if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL", "KISS_V6_15M_SIGNAL", "KISS_V7_SIGNAL", "KISS_V7_RSI_MARKET_ENTRY", "PLACE_PENDING", "PLACE_MARKET", "REPLACE_PENDING"}:
+    if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL", "KISS_V6_15M_SIGNAL", "KISS_V7_SIGNAL", "KISS_V7_RSI_MARKET_ENTRY", "KISS_V7_RSI_LIMIT_ENTRY", "PLACE_PENDING", "PLACE_MARKET", "REPLACE_PENDING"}:
         try:
             event_time_ms = int(payload.get("event_time_ms"))
         except (TypeError, ValueError):
