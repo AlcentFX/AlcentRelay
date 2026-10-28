@@ -1,4 +1,4 @@
-# ATOS Relay v1.8.13 — V7 5M/15M plus independent RSI B008 conditional LIMIT/MARKET routing
+# ATOS Relay v1.8.14 — V7 5M/15M plus independent RSI B008 conditional LIMIT/MARKET routing
 from __future__ import annotations
 
 import html
@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
-RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_13_V7_RSI_B008"
+RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_14_V7_RSI_B008"
 
 SERVICE_NAME = "ATOS Relay"
 RELAY_VERSION = "1.8.13"
@@ -406,7 +406,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
     if "execution_allowed" in payload and payload.get("execution_allowed") is not True:
         return False, "execution_not_allowed", 403
 
-    # v1.8.13: strict, isolated RSI B008 conditional LIMIT/MARKET command contract.
+    # v1.8.14: strict, isolated RSI B008 conditional LIMIT/MARKET command contract.
     if command in {"KISS_V7_RSI_MARKET_ENTRY", "KISS_V7_RSI_LIMIT_ENTRY", "KISS_V7_RSI_OPPOSITE_PROTECT"}:
         if payload.get("strategy_id") != "KISS_V7_RSI" or payload.get("strategy_version") != "V7-RSI-B008":
             return False, "RSI strategy/version mismatch", 400
@@ -517,13 +517,19 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
                     return False, "5M B009 must not include EP3", 400
                 if abs(abs(float(payload.get("stop_loss", 0)) - float(payload.get("entry_price", 0))) - 20.0) > 0.001:
                     return False, "5M B009 requires 20-point initial SL reference", 400
-            if expected_tf == 15 and (entry_command != "PLACE_PENDING" or payload.get("pending_type") != "LIMIT"):
-                return False, "15M KISS V7 requires LIMIT pending entries", 400
-            try:
-                if expected_tf == 15 and float(payload.get("entry_price_3", 0) or 0) <= 0:
-                    return False, "positive entry_price_3 required for KISS V7 15M signal", 400
-            except (TypeError, ValueError):
-                return False, "valid entry_price_3 required for KISS V7 triple-entry signal", 400
+            if expected_tf == 15:
+                if payload.get("strategy_version") != "V7-15M-B010" or entry_command != "PLACE_PENDING" or payload.get("pending_type") != "LIMIT":
+                    return False, "15M requires B010 single LIMIT contract", 400
+                if "entry_price_3" in payload:
+                    return False, "15M B010 must not include EP3", 400
+                try:
+                    ep15 = float(payload.get("entry_price", 0))
+                    sl15 = float(payload.get("stop_loss", 0))
+                    direction15 = payload.get("direction")
+                    if ep15 <= 0 or direction15 not in ("BUY", "SELL") or abs(sl15 - (ep15 - 20.0 if direction15 == "BUY" else ep15 + 20.0)) > 0.001:
+                        return False, "15M B010 requires directional 20-price-unit SL", 400
+                except (ValueError, TypeError):
+                    return False, "15M B010 invalid EP/SL", 400
 
         # v1.7.1/B019: pending KISS V5 entries are permitted only when the
         # transported entry_price exactly matches the EP printed on TradingView.
