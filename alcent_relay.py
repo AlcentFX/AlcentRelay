@@ -1,4 +1,4 @@
-# ATOS Relay v1.8.14 — V7 5M/15M plus independent RSI B008 conditional LIMIT/MARKET routing
+# ATOS Relay v1.8.15 — V7 5M/15M plus independent RSI B008 conditional LIMIT/MARKET routing
 from __future__ import annotations
 
 import html
@@ -425,7 +425,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
                     return False, "RSI LIMIT invalid reference prices", 400
                 if not (ep < sc if payload["direction"] == "BUY" else ep > sc):
                     return False, "RSI LIMIT reference wick condition not satisfied", 400
-            required = {"initial_sl_distance": 20.0, "tp1_distance": 5.0,
+            required = {"initial_sl_distance": 30.0, "tp1_distance": 5.0,
                         "tp1_close_pct": 50, "tp2_distance": 10.0,
                         "lot_multiplier": 1.1}
             for key, expected in required.items():
@@ -511,6 +511,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
             except (ValueError, TypeError):
                 return False, "invalid KISS V7 management timeframe", 400
             if expected_tf == 5:
+                return False, "V7 5M B009 temporarily disabled; no new entries", 403
                 if payload.get("strategy_version") != "V7-5M-B009" or entry_command != "PLACE_MARKET":
                     return False, "5M requires B009 EP1 MARKET contract", 400
                 if "entry_price_3" in payload:
@@ -526,8 +527,8 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
                     ep15 = float(payload.get("entry_price", 0))
                     sl15 = float(payload.get("stop_loss", 0))
                     direction15 = payload.get("direction")
-                    if ep15 <= 0 or direction15 not in ("BUY", "SELL") or abs(sl15 - (ep15 - 20.0 if direction15 == "BUY" else ep15 + 20.0)) > 0.001:
-                        return False, "15M B010 requires directional 20-price-unit SL", 400
+                    if ep15 <= 0 or direction15 not in ("BUY", "SELL") or abs(sl15 - (ep15 - 30.0 if direction15 == "BUY" else ep15 + 30.0)) > 0.001:
+                        return False, "15M B010 requires directional 30-price-unit SL", 400
                 except (ValueError, TypeError):
                     return False, "15M B010 invalid EP/SL", 400
 
