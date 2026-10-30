@@ -16,10 +16,10 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
-RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_16_V7_RSI_B009"
+RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_17_V7_5M_B010"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.8.16"
+RELAY_VERSION = "1.8.17"
 # TradingView is authoritative for event_id. Preserve incoming IDs unchanged,
 # including V7_5M_B005 and V7_15M_B005, for deduplication and MT4 ACKs.
 EXPECTED_SYSTEM = "ATOS"
@@ -515,13 +515,18 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
             except (ValueError, TypeError):
                 return False, "invalid KISS V7 management timeframe", 400
             if expected_tf == 5:
-                return False, "V7 5M B009 temporarily disabled; no new entries", 403
-                if payload.get("strategy_version") != "V7-5M-B009" or entry_command != "PLACE_MARKET":
-                    return False, "5M requires B009 EP1 MARKET contract", 400
+                if payload.get("strategy_version") != "V7-5M-B010" or entry_command != "PLACE_PENDING" or payload.get("pending_type") != "LIMIT":
+                    return False, "5M B010 requires single LIMIT contract", 400
                 if "entry_price_3" in payload:
-                    return False, "5M B009 must not include EP3", 400
-                if abs(abs(float(payload.get("stop_loss", 0)) - float(payload.get("entry_price", 0))) - 20.0) > 0.001:
-                    return False, "5M B009 requires 20-point initial SL reference", 400
+                    return False, "5M B010 must not include EP3", 400
+                try:
+                    ep5 = float(payload.get("entry_price", 0))
+                    sl5 = float(payload.get("stop_loss", 0))
+                    direction5 = payload.get("direction")
+                    if ep5 <= 0 or direction5 not in ("BUY", "SELL") or abs(sl5 - (ep5 - 30.0 if direction5 == "BUY" else ep5 + 30.0)) > 0.001:
+                        return False, "5M B010 requires directional 30-price-unit SL", 400
+                except (ValueError, TypeError):
+                    return False, "5M B010 invalid EP/SL", 400
             if expected_tf == 15:
                 if payload.get("strategy_version") != "V7-15M-B010" or entry_command != "PLACE_PENDING" or payload.get("pending_type") != "LIMIT":
                     return False, "15M requires B010 single LIMIT contract", 400
