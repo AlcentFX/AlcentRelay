@@ -16,10 +16,10 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request
 
-RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_14_V7_RSI_B008"
+RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_16_V7_RSI_B009"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.8.13"
+RELAY_VERSION = "1.8.16"
 # TradingView is authoritative for event_id. Preserve incoming IDs unchanged,
 # including V7_5M_B005 and V7_15M_B005, for deduplication and MT4 ACKs.
 EXPECTED_SYSTEM = "ATOS"
@@ -408,13 +408,17 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
 
     # v1.8.14: strict, isolated RSI B008 conditional LIMIT/MARKET command contract.
     if command in {"KISS_V7_RSI_MARKET_ENTRY", "KISS_V7_RSI_LIMIT_ENTRY", "KISS_V7_RSI_OPPOSITE_PROTECT"}:
-        if payload.get("strategy_id") != "KISS_V7_RSI" or payload.get("strategy_version") != "V7-RSI-B008":
+        if payload.get("strategy_id") != "KISS_V7_RSI" or payload.get("strategy_version") != "V7-RSI-B009":
             return False, "RSI strategy/version mismatch", 400
         if payload.get("direction") not in ("BUY", "SELL"):
             return False, "RSI direction must be BUY or SELL", 400
         if payload.get("management_tf_minutes") != 5:
             return False, "RSI timeframe must be 5", 400
         if command in {"KISS_V7_RSI_MARKET_ENTRY", "KISS_V7_RSI_LIMIT_ENTRY"}:
+            # B009: Pine decides the structure/candle/market priority; relay transports unchanged.
+            source = payload.get("entry_source")
+            if source not in ({"STRUCTURE", "CANDLE"} if command == "KISS_V7_RSI_LIMIT_ENTRY" else {"MARKET"}):
+                return False, "RSI B009 entry_source does not match entry command", 400
             expected_entry = "LIMIT" if command == "KISS_V7_RSI_LIMIT_ENTRY" else "MARKET"
             if payload.get("entry_command") != expected_entry or payload.get("entry_count") != 1:
                 return False, "RSI entry command/count mismatch", 400
