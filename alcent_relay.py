@@ -19,7 +19,7 @@ from flask import Flask, Response, jsonify, request
 RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_20_DUAL_15M_SL20"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.8.20"
+RELAY_VERSION = "1.8.21"
 # TradingView is authoritative for event_id. Preserve incoming IDs unchanged,
 # including V7_5M_B005 and V7_15M_B005, for deduplication and MT4 ACKs.
 EXPECTED_SYSTEM = "ATOS"
@@ -407,7 +407,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
         return False, "V11.83 dual-15M only: retired/legacy strategy", 403
 
     if payload.get("strategy_id") == "KISS_V7_15M" and command not in {"KISS_V7_SIGNAL", "KISS_V7_AOI_PORTFOLIO_PROTECT"}:
-        return False, "unsupported 15M B011 command", 403
+        return False, "unsupported 15M B012 command", 403
     if payload.get("strategy_id") == "KISS_V7_RSI" and command not in {"KISS_V7_RSI_MARKET_ENTRY", "KISS_V7_RSI_LIMIT_ENTRY", "KISS_V7_RSI_OPPOSITE_PROTECT"}:
         return False, "unsupported RSI B010 command", 403
 
@@ -524,18 +524,18 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
             except (ValueError, TypeError):
                 return False, "invalid KISS V7 management timeframe", 400
             if expected_tf == 15:
-                if payload.get("strategy_version") != "V7-15M-B011" or entry_command != "PLACE_PENDING" or payload.get("pending_type") != "LIMIT":
-                    return False, "15M B011 requires single LIMIT contract", 400
+                if payload.get("strategy_version") != "V7-15M-B012" or entry_command != "PLACE_PENDING" or payload.get("pending_type") != "LIMIT":
+                    return False, "15M B012 requires single LIMIT contract", 400
                 if "entry_price_3" in payload:
-                    return False, "15M B011 must not include EP3", 400
+                    return False, "15M B012 must not include EP3", 400
                 try:
                     ep15 = float(payload.get("entry_price", 0))
                     sl15 = float(payload.get("stop_loss", 0))
                     direction15 = payload.get("direction")
                     if ep15 <= 0 or direction15 not in ("BUY", "SELL") or abs(sl15 - (ep15 - 20.0 if direction15 == "BUY" else ep15 + 20.0)) > 0.001:
-                        return False, "15M B011 requires directional 20-price-unit SL", 400
+                        return False, "15M B012 requires directional 20-price-unit SL", 400
                 except (ValueError, TypeError):
-                    return False, "15M B011 invalid EP/SL", 400
+                    return False, "15M B012 invalid EP/SL", 400
 
         # v1.7.1/B019: pending KISS V5 entries are permitted only when the
         # transported entry_price exactly matches the EP printed on TradingView.
