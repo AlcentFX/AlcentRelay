@@ -19,7 +19,7 @@ from flask import Flask, Response, jsonify, request
 RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_20_DUAL_15M_SL20"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.8.22"
+RELAY_VERSION = "1.8.23"
 # TradingView is authoritative for event_id. Preserve incoming IDs unchanged,
 # including V7_5M_B005 and V7_15M_B005, for deduplication and MT4 ACKs.
 EXPECTED_SYSTEM = "ATOS"
@@ -417,11 +417,11 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
     if "execution_allowed" in payload and payload.get("execution_allowed") is not True:
         return False, "execution_not_allowed", 403
 
-    # S3 B001: strict independent MARKET-only entry and opposite-crossover protection.
+    # S3 B003: strict independent MARKET-only entry and opposite-crossover protection.
     if payload.get("strategy_id") == "KISS_V7_S3":
         if command not in {"KISS_V7_S3_MARKET_ENTRY", "KISS_V7_S3_OPPOSITE_PROTECT"}:
             return False, "unsupported S3 command", 403
-        if payload.get("strategy_version") != "V7-S3-B001" or payload.get("direction") not in ("BUY", "SELL") or payload.get("management_tf_minutes") != 15:
+        if payload.get("strategy_version") != "V7-S3-B003" or payload.get("direction") not in ("BUY", "SELL") or payload.get("management_tf_minutes") != 15:
             return False, "S3 strategy/version/direction/timeframe mismatch", 400
         if command == "KISS_V7_S3_MARKET_ENTRY":
             if payload.get("entry_command") != "MARKET" or payload.get("entry_source") != "CANDLE_BREAK" or payload.get("entry_count") != 1:
