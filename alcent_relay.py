@@ -19,7 +19,7 @@ from flask import Flask, Response, jsonify, request
 RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_20_DUAL_15M_SL20"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.8.21"
+RELAY_VERSION = "1.8.22"
 # TradingView is authoritative for event_id. Preserve incoming IDs unchanged,
 # including V7_5M_B005 and V7_15M_B005, for deduplication and MT4 ACKs.
 EXPECTED_SYSTEM = "ATOS"
@@ -55,6 +55,8 @@ ALLOWED_COMMANDS = {
     "KISS_V7_RSI_MARKET_ENTRY",
     "KISS_V7_RSI_LIMIT_ENTRY",
     "KISS_V7_RSI_OPPOSITE_PROTECT",
+    "KISS_V7_S3_MARKET_ENTRY",
+    "KISS_V7_S3_OPPOSITE_PROTECT",
     "KISS_V6_15M_DIRECTION_FLIP_PROTECT",
     "KISS_V6_1H_ZONE_PORTFOLIO_PROTECT",
     "PLACE_PENDING",
@@ -403,7 +405,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
             return False, "V4 campaign_id does not match engine_id", 400
 
     # V11.83: only two active 15M strategy IDs may enter the relay.
-    if payload.get("strategy_id") not in {"KISS_V7_15M", "KISS_V7_RSI"}:
+    if payload.get("strategy_id") not in {"KISS_V7_15M", "KISS_V7_RSI", "KISS_V7_S3"}:
         return False, "V11.83 dual-15M only: retired/legacy strategy", 403
 
     if payload.get("strategy_id") == "KISS_V7_15M" and command not in {"KISS_V7_SIGNAL", "KISS_V7_AOI_PORTFOLIO_PROTECT"}:
@@ -414,6 +416,29 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
     # Role-gating defence in depth. Current EXECUTION alerts send true.
     if "execution_allowed" in payload and payload.get("execution_allowed") is not True:
         return False, "execution_not_allowed", 403
+
+    # S3 B001: strict independent MARKET-only entry and opposite-crossover protection.
+    if payload.get("strategy_id") == "KISS_V7_S3":
+        if command not in {"KISS_V7_S3_MARKET_ENTRY", "KISS_V7_S3_OPPOSITE_PROTECT"}:
+            return False, "unsupported S3 command", 403
+        if payload.get("strategy_version") != "V7-S3-B001" or payload.get("direction") not in ("BUY", "SELL") or payload.get("management_tf_minutes") != 15:
+            return False, "S3 strategy/version/direction/timeframe mismatch", 400
+        if command == "KISS_V7_S3_MARKET_ENTRY":
+            if payload.get("entry_command") != "MARKET" or payload.get("entry_source") != "CANDLE_BREAK" or payload.get("entry_count") != 1:
+                return False, "S3 MARKET contract mismatch", 400
+            for key, expected in {"initial_sl_distance":20.0, "tp1_distance":5.0, "tp1_close_pct":50, "tp2_distance":10.0, "tp2_close_pct":100, "lot_addition":0.02}.items():
+                v = payload.get(key)
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or float(v) != expected:
+                    return False, f"S3 invalid {key}", 400
+            if payload.get("tp1_move_sl_to_ep") is not True:
+                return False, "S3 TP1 EP move required", 400
+            if any(isinstance(payload.get(k), bool) or not isinstance(payload.get(k), (int,float)) or not (30.0 < float(payload[k]) < 1000000.0) for k in ("entry_price", "signal_close")):
+                return False, "S3 invalid MARKET reference prices", 400
+            if abs(float(payload["entry_price"]) - float(payload["signal_close"])) > 0.00001:
+                return False, "S3 entry price must equal breaker close", 400
+        else:
+            if payload.get("profitable_action") != "SL_TO_EP" or payload.get("nonprofitable_action") != "TP_TO_EP" or payload.get("cancel_pending") is not True or payload.get("preserve_initial_sl") is not True:
+                return False, "S3 invalid protection contract", 400
 
     # v1.8.14: strict, isolated RSI B008 conditional LIMIT/MARKET command contract.
     if command in {"KISS_V7_RSI_MARKET_ENTRY", "KISS_V7_RSI_LIMIT_ENTRY", "KISS_V7_RSI_OPPOSITE_PROTECT"}:
@@ -550,7 +575,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
             if abs(entry_price - label_ep) > 1e-6:
                 return False, "pending KISS V5/V6 signal entry_price does not match label_ep", 400
 
-    if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL", "KISS_V6_15M_SIGNAL", "KISS_V7_SIGNAL", "KISS_V7_RSI_MARKET_ENTRY", "KISS_V7_RSI_LIMIT_ENTRY", "PLACE_PENDING", "PLACE_MARKET", "REPLACE_PENDING"}:
+    if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL", "KISS_V6_15M_SIGNAL", "KISS_V7_SIGNAL", "KISS_V7_RSI_MARKET_ENTRY", "KISS_V7_RSI_LIMIT_ENTRY", "KISS_V7_S3_MARKET_ENTRY", "PLACE_PENDING", "PLACE_MARKET", "REPLACE_PENDING"}:
         try:
             event_time_ms = int(payload.get("event_time_ms"))
         except (TypeError, ValueError):
