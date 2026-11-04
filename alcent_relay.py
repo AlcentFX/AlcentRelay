@@ -19,7 +19,7 @@ from flask import Flask, Response, jsonify, request
 RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_20_DUAL_15M_SL20"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.8.23"
+RELAY_VERSION = "1.8.24"
 # TradingView is authoritative for event_id. Preserve incoming IDs unchanged,
 # including V7_5M_B005 and V7_15M_B005, for deduplication and MT4 ACKs.
 EXPECTED_SYSTEM = "ATOS"
@@ -417,6 +417,14 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
     if "execution_allowed" in payload and payload.get("execution_allowed") is not True:
         return False, "execution_not_allowed", 403
 
+    # Full-position management contract for V7 15M; reject stale alerts.
+    if payload.get("strategy_id") == "KISS_V7_15M" and command == "KISS_V7_SIGNAL":
+        for key, expected in {"tp1_distance": 5.0, "tp1_close_pct": 0, "tp2_distance": 10.0, "tp2_close_pct": 100}.items():
+            if isinstance(payload.get(key), bool) or not isinstance(payload.get(key), (int, float)) or float(payload[key]) != expected:
+                return False, f"V7 15M invalid full-position management {key}", 400
+        if payload.get("tp1_move_sl_to_ep") is not True:
+            return False, "V7 15M SL-to-EP required", 400
+
     # S3 B003: strict independent MARKET-only entry and opposite-crossover protection.
     if payload.get("strategy_id") == "KISS_V7_S3":
         if command not in {"KISS_V7_S3_MARKET_ENTRY", "KISS_V7_S3_OPPOSITE_PROTECT"}:
@@ -426,7 +434,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
         if command == "KISS_V7_S3_MARKET_ENTRY":
             if payload.get("entry_command") != "MARKET" or payload.get("entry_source") != "CANDLE_BREAK" or payload.get("entry_count") != 1:
                 return False, "S3 MARKET contract mismatch", 400
-            for key, expected in {"initial_sl_distance":20.0, "tp1_distance":5.0, "tp1_close_pct":50, "tp2_distance":10.0, "tp2_close_pct":100, "lot_addition":0.02}.items():
+            for key, expected in {"initial_sl_distance":20.0, "tp1_distance":5.0, "tp1_close_pct":0, "tp2_distance":10.0, "tp2_close_pct":100, "lot_addition":0.02}.items():
                 v = payload.get(key)
                 if isinstance(v, bool) or not isinstance(v, (int, float)) or float(v) != expected:
                     return False, f"S3 invalid {key}", 400
@@ -464,7 +472,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
                 if not (ep < sc if payload["direction"] == "BUY" else ep > sc):
                     return False, "RSI LIMIT reference wick condition not satisfied", 400
             required = {"initial_sl_distance": 20.0, "tp1_distance": 5.0,
-                        "tp1_close_pct": 50, "tp2_distance": 10.0,
+                        "tp1_close_pct": 0, "tp2_distance": 10.0,
                         "lot_multiplier": 1.1}
             for key, expected in required.items():
                 value = payload.get(key)
