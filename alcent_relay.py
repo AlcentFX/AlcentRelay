@@ -19,7 +19,7 @@ from flask import Flask, Response, jsonify, request
 RELAY_BUILD_ID = "ATOS_KISS_RELAY_1_8_20_DUAL_15M_SL20"
 
 SERVICE_NAME = "ATOS Relay"
-RELAY_VERSION = "1.8.24"
+RELAY_VERSION = "1.8.25-S3-TWO-STAGED"
 # TradingView is authoritative for event_id. Preserve incoming IDs unchanged,
 # including V7_5M_B005 and V7_15M_B005, for deduplication and MT4 ACKs.
 EXPECTED_SYSTEM = "ATOS"
@@ -56,6 +56,7 @@ ALLOWED_COMMANDS = {
     "KISS_V7_RSI_LIMIT_ENTRY",
     "KISS_V7_RSI_OPPOSITE_PROTECT",
     "KISS_V7_S3_MARKET_ENTRY",
+    "KISS_V7_S3_LIMIT_ENTRY",
     "KISS_V7_S3_OPPOSITE_PROTECT",
     "KISS_V6_15M_DIRECTION_FLIP_PROTECT",
     "KISS_V6_1H_ZONE_PORTFOLIO_PROTECT",
@@ -392,6 +393,39 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
     if command not in ALLOWED_COMMANDS:
         return False, "unknown command", 400
 
+    # v1.8.25: fail closed to the two approved S3 engines only.
+    expected = {"KISS_V7_S3_5M": (5, 0.0), "KISS_V7_S3_15M": (15, 0.01)}
+    sid = payload.get("strategy_id")
+    if sid not in expected:
+        return False, "retired strategy blocked", 403
+    tf, addition = expected[sid]
+    if payload.get("strategy_version") != f"V7-S3-{tf}M-B001":
+        return False, "S3 strategy version mismatch", 400
+    if payload.get("management_tf_minutes") != tf or payload.get("direction") not in ("BUY", "SELL"):
+        return False, "S3 timeframe or direction mismatch", 400
+    if command not in ("KISS_V7_S3_LIMIT_ENTRY", "KISS_V7_S3_OPPOSITE_PROTECT"):
+        return False, "S3 command not permitted", 403
+    if payload.get("execution_allowed") is not True:
+        return False, "execution disabled", 403
+    if command == "KISS_V7_S3_LIMIT_ENTRY":
+        if payload.get("entry_command") != "LIMIT" or payload.get("entry_source") != "REFERENCE_OPEN" or payload.get("entry_count") != 1:
+            return False, "S3 LIMIT contract mismatch", 400
+        for field, expected_value in {"initial_sl_distance":20.0,"tp1_distance":5.0,"tp1_close_pct":0,"tp2_distance":10.0,"tp2_close_pct":100,"lot_addition":addition}.items():
+            v = payload.get(field)
+            if isinstance(v,bool) or not isinstance(v,(int,float)) or abs(v-expected_value)>0.000001:
+                return False, f"S3 invalid {field}", 400
+        if payload.get("tp1_move_sl_to_ep") is not True:
+            return False, "S3 breakeven requirement missing", 400
+        ep, close = payload.get("entry_price"), payload.get("signal_close")
+        if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not 30 < v < 1000000 for v in (ep,close)):
+            return False, "S3 invalid prices", 400
+        if (payload["direction"] == "BUY" and not close > ep) or (payload["direction"] == "SELL" and not close < ep):
+            return False, "S3 reference OPEN breakout invalid", 400
+    else:
+        if any(payload.get(k) != v for k,v in {"cancel_pending":True,"profitable_action":"SL_TO_EP","nonprofitable_action":"TP_TO_EP","preserve_initial_sl":True}.items()):
+            return False, "S3 protection contract invalid", 400
+    return True, "S3 contract accepted", 200
+
     # V4 dual-engine ownership. The relay preserves the complete payload;
     # MT4 uses campaign_id/engine_id to scope cancel/defend/inventory actions.
     strategy_version = str(payload.get("strategy_version", "")).strip().upper()
@@ -583,7 +617,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
             if abs(entry_price - label_ep) > 1e-6:
                 return False, "pending KISS V5/V6 signal entry_price does not match label_ep", 400
 
-    if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL", "KISS_V6_15M_SIGNAL", "KISS_V7_SIGNAL", "KISS_V7_RSI_MARKET_ENTRY", "KISS_V7_RSI_LIMIT_ENTRY", "KISS_V7_S3_MARKET_ENTRY", "PLACE_PENDING", "PLACE_MARKET", "REPLACE_PENDING"}:
+    if command in {"KISS_V5_SIGNAL", "KISS_V6_SIGNAL", "KISS_V6_5M_SIGNAL", "KISS_V6_15M_SIGNAL", "KISS_V7_SIGNAL", "KISS_V7_RSI_MARKET_ENTRY", "KISS_V7_RSI_LIMIT_ENTRY", "KISS_V7_S3_MARKET_ENTRY", "KISS_V7_S3_LIMIT_ENTRY", "PLACE_PENDING", "PLACE_MARKET", "REPLACE_PENDING"}:
         try:
             event_time_ms = int(payload.get("event_time_ms"))
         except (TypeError, ValueError):
