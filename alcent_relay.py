@@ -399,7 +399,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
     if sid not in expected:
         return False, "retired strategy blocked", 403
     tf, addition = expected[sid]
-    if payload.get("strategy_version") != f"V7-S3-{tf}M-B001":
+    if payload.get("strategy_version") != f"V7-S3-{tf}M-B002":
         return False, "S3 strategy version mismatch", 400
     if payload.get("management_tf_minutes") != tf or payload.get("direction") not in ("BUY", "SELL"):
         return False, "S3 timeframe or direction mismatch", 400
