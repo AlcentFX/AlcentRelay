@@ -393,14 +393,21 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
     if command not in ALLOWED_COMMANDS:
         return False, "unknown command", 400
 
-    # v1.8.25: fail closed to the two approved S3 engines only.
-    expected = {"KISS_V7_S3_5M": (5, 0.0), "KISS_V7_S3_15M": (15, 0.01)}
+    # v1.8.27: isolated 15M MACD B004/B005 contracts only.
+    # Frozen RSI B003 and retired S3 strategies remain blocked.
+    expected = {
+        "KISS_V7_S3_MACD_15M_B004": "V7-S3-MACD-15M-B004",
+        "KISS_V7_S3_MACD_15M_B005": "V7-S3-MACD-15M-B005",
+    }
     sid = payload.get("strategy_id")
     if sid not in expected:
-        return False, "retired strategy blocked", 403
-    tf, addition = expected[sid]
-    if payload.get("strategy_version") != f"V7-S3-{tf}M-B002":
-        return False, "S3 strategy version mismatch", 400
+        return False, "strategy not enabled: MACD B004/B005 only", 403
+    tf, addition = 15, 0.0
+    if payload.get("strategy_version") != expected[sid]:
+        return False, "MACD strategy version mismatch", 400
+    # Reject ambiguous IDs from the prior chart-review scripts.
+    if not str(payload.get("event_id", "")).startswith(sid + "_"):
+        return False, "event_id must be prefixed with the unique strategy_id", 400
     if payload.get("management_tf_minutes") != tf or payload.get("direction") not in ("BUY", "SELL"):
         return False, "S3 timeframe or direction mismatch", 400
     if command not in ("KISS_V7_S3_LIMIT_ENTRY", "KISS_V7_S3_OPPOSITE_PROTECT"):
@@ -420,7 +427,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
         if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not 30 < v < 1000000 for v in (ep,close)):
             return False, "S3 invalid prices", 400
         if (payload["direction"] == "BUY" and not close > ep) or (payload["direction"] == "SELL" and not close < ep):
-            return False, "S3 reference OPEN breakout invalid", 400
+            return False, "S3 LIMIT entry price must be below BUY close or above SELL close", 400
     else:
         if any(payload.get(k) != v for k,v in {"cancel_pending":True,"profitable_action":"SL_TO_EP","nonprofitable_action":"TP_TO_EP","preserve_initial_sl":True}.items()):
             return False, "S3 protection contract invalid", 400
