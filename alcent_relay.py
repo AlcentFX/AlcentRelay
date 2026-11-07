@@ -57,7 +57,7 @@ ALLOWED_COMMANDS = {
     "KISS_V7_RSI_OPPOSITE_PROTECT",
     "KISS_V7_S3_MARKET_ENTRY",
     "KISS_V7_S3_LIMIT_ENTRY",
-    "KISS_V7_S3_OPPOSITE_PROTECT",
+    "KISS_V7_S3_HTF_DIRECTION_PROTECT",
     "KISS_V6_15M_DIRECTION_FLIP_PROTECT",
     "KISS_V6_1H_ZONE_PORTFOLIO_PROTECT",
     "PLACE_PENDING",
@@ -402,7 +402,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
     sid = payload.get("strategy_id")
     if sid not in expected:
         return False, "strategy not enabled: MACD B004/B005 only", 403
-    tf, addition = 15, 0.0
+    tf = 15
     if payload.get("strategy_version") != expected[sid]:
         return False, "MACD strategy version mismatch", 400
     # Reject ambiguous IDs from the prior chart-review scripts.
@@ -410,26 +410,26 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
         return False, "event_id must be prefixed with the unique strategy_id", 400
     if payload.get("management_tf_minutes") != tf or payload.get("direction") not in ("BUY", "SELL"):
         return False, "S3 timeframe or direction mismatch", 400
-    if command not in ("KISS_V7_S3_LIMIT_ENTRY", "KISS_V7_S3_OPPOSITE_PROTECT"):
+    if command not in ("KISS_V7_S3_LIMIT_ENTRY", "KISS_V7_S3_HTF_DIRECTION_PROTECT"):
         return False, "S3 command not permitted", 403
     if payload.get("execution_allowed") is not True:
         return False, "execution disabled", 403
+    if any(k in payload for k in ("lot_addition", "lots", "lot_size", "tp1_distance", "tp2_distance", "tp1_close_pct", "tp2_close_pct", "tp1_move_sl_to_ep", "profitable_action", "nonprofitable_action", "preserve_initial_sl")):
+        return False, "Risk and trade-management parameters must be configured in MT4 only", 400
     if command == "KISS_V7_S3_LIMIT_ENTRY":
+        if payload.get("initial_sl_distance") != 20.0:
+            return False, "Initial SL must be 20 XAUUSD price units", 400
+        if any(k in payload for k in ("take_profit", "tp", "tp_price", "tp_distance")):
+            return False, "Initial TP must be absent", 400
         if payload.get("entry_command") != "LIMIT" or payload.get("entry_source") != "REFERENCE_OPEN" or payload.get("entry_count") != 1:
             return False, "S3 LIMIT contract mismatch", 400
-        for field, expected_value in {"initial_sl_distance":20.0,"tp1_distance":5.0,"tp1_close_pct":0,"tp2_distance":10.0,"tp2_close_pct":100,"lot_addition":addition}.items():
-            v = payload.get(field)
-            if isinstance(v,bool) or not isinstance(v,(int,float)) or abs(v-expected_value)>0.000001:
-                return False, f"S3 invalid {field}", 400
-        if payload.get("tp1_move_sl_to_ep") is not True:
-            return False, "S3 breakeven requirement missing", 400
         ep, close = payload.get("entry_price"), payload.get("signal_close")
         if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not 30 < v < 1000000 for v in (ep,close)):
             return False, "S3 invalid prices", 400
         if (payload["direction"] == "BUY" and not close > ep) or (payload["direction"] == "SELL" and not close < ep):
             return False, "S3 LIMIT entry price must be below BUY close or above SELL close", 400
     else:
-        if any(payload.get(k) != v for k,v in {"cancel_pending":True,"profitable_action":"SL_TO_EP","nonprofitable_action":"TP_TO_EP","preserve_initial_sl":True}.items()):
+        if payload.get("cancel_pending") is not True:
             return False, "S3 protection contract invalid", 400
     return True, "S3 contract accepted", 200
 
@@ -468,7 +468,7 @@ def _validate_event(payload: dict) -> tuple[bool, str, int]:
 
     # S3 B003: strict independent MARKET-only entry and opposite-crossover protection.
     if payload.get("strategy_id") == "KISS_V7_S3":
-        if command not in {"KISS_V7_S3_MARKET_ENTRY", "KISS_V7_S3_OPPOSITE_PROTECT"}:
+        if command not in {"KISS_V7_S3_MARKET_ENTRY", "KISS_V7_S3_HTF_DIRECTION_PROTECT"}:
             return False, "unsupported S3 command", 403
         if payload.get("strategy_version") != "V7-S3-B003" or payload.get("direction") not in ("BUY", "SELL") or payload.get("management_tf_minutes") != 15:
             return False, "S3 strategy/version/direction/timeframe mismatch", 400
